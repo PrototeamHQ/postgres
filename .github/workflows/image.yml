@@ -1,0 +1,50 @@
+name: image
+
+# Builds and tests the image on every push and pull request, and publishes it from main as
+# ghcr.io/prototeamhq/postgres:<postgres minor>-<build number> (README.md#building-and-publishing).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    concurrency:
+      group: image-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    env:
+      LOCAL_IMAGE: postgres-image:${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Build
+        run: docker build -t "$LOCAL_IMAGE" .
+
+      - name: Test
+        env:
+          TEST_POSTGRES_IMAGE: ${{ env.LOCAL_IMAGE }}
+        run: bun test
+
+      # Build numbers continue the image's earlier builds, which published up to 18.6-2, so a tag
+      # never moves to another image.
+      - name: Publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          minor=$(docker run --rm "$LOCAL_IMAGE" postgres --version | sed -E 's/^postgres \(PostgreSQL\) ([0-9]+\.[0-9]+).*/\1/')
+          tag="ghcr.io/prototeamhq/postgres:$minor-$(( ${{ github.run_number }} + 2 ))"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$LOCAL_IMAGE" "$tag"
+          docker push "$tag"
+          echo "Published \`$tag@$(docker inspect --format '{{index .RepoDigests 0}}' "$tag" | cut -d@ -f2)\`" >> "$GITHUB_STEP_SUMMARY"
