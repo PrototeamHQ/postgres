@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libcurl4-openssl-dev libsodium-dev libicu-dev flex bison \
     && rm -rf /var/lib/apt/lists/*
 COPY build-pgxs.sh /usr/local/bin/build-pgxs
+COPY patches /patches
 RUN build-pgxs supautils supabase/supautils 42d491cd2519d763918527760151f9e6bd5c9f23 # v3.4.4
 RUN build-pgxs pg_net supabase/pg_net 698fb055f666366a78c112b0578b0a5652ddbcfa # v0.20.4
 RUN build-pgxs supabase_vault supabase/vault 6e0cd916242d922a646e4d611cc215e09dd429f4 # v0.3.1

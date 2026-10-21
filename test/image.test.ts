@@ -369,6 +369,19 @@ describe.skipIf(skip)('postgres image', () => {
       refused('create extension file_fdw')
     })
 
+    // patches/supautils/alter-role-all.patch: unpatched, supautils crashed the backend on both, and
+    // the server restarted every process. In one database it is ALTER DATABASE … SET, which the
+    // tenant owns.
+    test('settings for all roles, without crashing the server', () => {
+      refused('alter role all set search_path = public', 'permission denied to alter setting')
+      tenant(`alter role all in database postgres set work_mem = '8MB'`)
+      expect(
+        tenant(`select array_to_string(setconfig, ',') from pg_db_role_setting
+          where setrole = 0 and setdatabase = (select oid from pg_database where datname = 'postgres')`),
+      ).toContain('work_mem=8MB')
+      tenant('alter role all in database postgres reset work_mem')
+    })
+
     // The login role holds only its own role and postgres's; a password the tenant gives postgres
     // never logs in, since pg_hba.conf rejects every login as postgres.
     test('a login as postgres with a password the tenant gave it', () => {

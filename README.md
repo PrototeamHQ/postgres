@@ -24,6 +24,10 @@ The `Dockerfile`, on docker-library's `postgres:18.6-trixie`, pinned by digest:
 | Source at a pinned commit, PGXS | supautils, pg_net, Vault, pgsodium, pgmq, pg_tle, pg_stat_monitor, pg_hashids, index_advisor, pgjwt, plan_filter |
 | Source at a pinned commit, cmake | pgRouting 3.8 |
 
+`patches/<name>/` holds fixes the build applies to a source-built extension, until upstream has them:
+`patches/supautils/alter-role-all.patch` stops a non-superuser's `ALTER ROLE ALL … SET` from crashing the
+backend, which Postgres then refuses.
+
 `supautils/` holds `supautils.conf` and the extension scripts, copied from the
 [`supabase/postgres`](https://github.com/supabase/postgres) repository at e2770ca
 (`ansible/files/postgresql_config/supautils.conf.j2` and
@@ -101,7 +105,8 @@ TEST_POSTGRES_IMAGE=postgres-image:dev bun test
   extension packages per major, so their pins stay. A minor needs no `ALTER EXTENSION`.
 - **A PGDG or Groonga package.** Change its pinned version. A rebuild never takes a new release
   unasked. When PGDG drops an old version from its pool, the build fails until the pin moves.
-- **A source-built extension.** Change its commit, and the tag in its comment.
+- **A source-built extension.** Change its commit, and the tag in its comment. Drop a patch in
+  `patches/<name>/` the new commit already has; one that no longer applies fails the build.
 - **An upstream `.deb`.** Change its URL and sha256 together.
 - **The supautils config.** Diff `supautils.conf.j2` and `postgresql_extension_custom_scripts/`
   in `supabase/postgres` against `supautils/`, and keep the tiger fix.

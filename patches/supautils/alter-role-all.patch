@@ -1,0 +1,15 @@
+diff --git a/src/roles.c b/src/roles.c
+index d9762c1..c42960c 100644
+--- a/src/roles.c
++++ b/src/roles.c
+@@ -127,6 +127,10 @@ static bool alter_role_set(AlterRoleSetStmt        *stmt,
+   if (superuser()) {
+     return false;
+   }
++  /* ALTER ROLE ALL names no role: Postgres refuses it to non-superusers */
++  if (stmt->role == NULL) {
++    return false;
++  }
+ 
+   role_is_privileged = is_current_role_privileged(policy->privileged_role);
+ 
