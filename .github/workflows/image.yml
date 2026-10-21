@@ -53,15 +53,16 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      LOCAL_IMAGE: postgres-image:${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: image.tar.zst
 
+      # Takes the tag the image was saved under, which a re-run of this job alone does not change.
       - name: Load
-        run: zstd -dc image.tar.zst | docker load
+        run: |
+          image=$(zstd -dc image.tar.zst | docker load | sed -n 's/^Loaded image: //p')
+          echo "LOCAL_IMAGE=$image" >> "$GITHUB_ENV"
 
       # Build numbers continue the image's earlier builds, which published up to 18.6-2, so a tag
       # never moves to another image.
