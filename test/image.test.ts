@@ -5,13 +5,16 @@ import { join } from 'node:path'
 import { docker, must, probeDocker } from './docker'
 
 // The image as the workflow built it (README.md#how-a-container-runs-it): initialised with the
-// tenant `postgres`, no superuser, which creates every extension through supautils, and the
-// extensions with workers, keys and hooks work. The data sits on a volume, so the container can be
+// tenant `postgres`, no superuser, which creates every extension through supautils, and its login
+// role `app`, which acts as it; the extensions with workers, keys and hooks work. The data sits on a volume, so the container can be
 // recreated over it with the same mounted root key.
 const IMAGE = process.env.TEST_POSTGRES_IMAGE
 const availability = IMAGE
   ? probeDocker()
-  : { ok: false as const, reason: 'TEST_POSTGRES_IMAGE is not set: point it at a built image' }
+  : {
+      ok: false as const,
+      reason: 'TEST_POSTGRES_IMAGE is not set: point it at a built image',
+    }
 if (!availability.ok) console.warn(`[skip] postgres image: ${availability.reason}`)
 const skip = !availability.ok
 
@@ -20,7 +23,7 @@ const RESPONDER_IMAGE =
   'docker.io/library/alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507'
 const INIT = join(import.meta.dir, 'fixtures', 'init')
 const ROOT_KEY = 'a1'.repeat(32)
-const TENANT_PASSWORD = 'tenant'
+const LOGIN = 'app'
 
 // Each psql runs through `docker exec`, which takes a second or more on a busy runner.
 setDefaultTimeout(60_000)
@@ -126,7 +129,7 @@ const CREATE_ALL = EXTENSIONS.map(
 ).join('\n')
 
 // psql in the container over TCP, as a client from outside would log in.
-const psql = (sql: string, user = 'postgres', password = TENANT_PASSWORD) =>
+const psql = (sql: string, user = LOGIN, password = LOGIN) =>
   docker(
     [
       'exec',
@@ -160,10 +163,11 @@ const tenant = (sql: string) => {
   return result.stdout.trim()
 }
 
-const refused = (sql: string) => {
+const refused = (sql: string, reason?: string) => {
   const result = psql(sql)
   expect(result.code).not.toBe(0)
   expect(result.stderr).toContain('ERROR')
+  if (reason) expect(result.stderr).toContain(reason)
 }
 
 const until = async (what: string, check: () => boolean, seconds = 30) => {
@@ -234,9 +238,13 @@ describe.skipIf(skip)('postgres image', () => {
     if (keyDir) await rm(keyDir, { recursive: true, force: true })
   })
 
-  test('the tenant is no superuser and logs in only with its password', () => {
-    expect(tenant('select current_user, current_setting($$is_superuser$$)')).toBe('postgres|off')
-    expect(psql('select 1', 'postgres', 'wrong').code).not.toBe(0)
+  test('the login role acts as the tenant, no superuser, and logs in only with its password', () => {
+    expect(tenant('select current_user, session_user, current_setting($$is_superuser$$)')).toBe(
+      'postgres|app|off',
+    )
+    const wrong = psql('select 1', LOGIN, 'wrong')
+    expect(wrong.code).not.toBe(0)
+    expect(wrong.stderr).toContain('password authentication failed')
     const socket = docker([
       'exec',
       container,
@@ -274,10 +282,13 @@ describe.skipIf(skip)('postgres image', () => {
     // pg_cron records a run as succeeded only after the job's own transaction commits.
     await until(
       'a succeeded cron run',
-      () =>
-        tenant(`select count(*) > 0 from cron.job_run_details where status = 'succeeded'`) === 't',
+      () => tenant(`select count(*) from cron.job_run_details where status = 'succeeded'`) !== '0',
     )
     expect(tenant('select count(*) > 0 from ticks')).toBe('t')
+    expect(
+      tenant(`select string_agg(distinct j.username, ',') from cron.job j
+        join cron.job_run_details d using (jobid) where d.status = 'succeeded'`),
+    ).toBe('postgres')
     tenant(`select cron.unschedule('tick')`)
   })
 
@@ -353,10 +364,115 @@ describe.skipIf(skip)('postgres image', () => {
     test('superuser, server file access, replication role and reserved roles', () => {
       refused('alter role postgres superuser')
       refused('grant pg_read_server_files to postgres')
-      refused('set session_replication_role = replica')
+      refused('set session_replication_role = replica', 'permission denied to set parameter')
       refused(`alter role anon set statement_timeout = '1s'`)
       refused('create extension file_fdw')
     })
+
+    // The login role holds only its own role and postgres's; a password the tenant gives postgres
+    // never logs in, since pg_hba.conf rejects every login as postgres.
+    test('a login as postgres with a password the tenant gave it', () => {
+      expect(
+        tenant(`set role none; select string_agg(rolname, ',' order by rolname) from pg_roles
+          where rolcanlogin and pg_has_role('app', oid, 'SET')`),
+      ).toBe('app,postgres')
+      tenant(`alter role postgres password 'pw'`)
+      const direct = psql('select 1', 'postgres', 'pw')
+      expect(direct.code).not.toBe(0)
+      expect(direct.stderr).toContain('pg_hba.conf rejects')
+      for (const target of [
+        'host=/var/run/postgresql dbname=postgres',
+        'host=127.0.0.1 dbname=postgres',
+        'host=/var/run/postgresql dbname=template1',
+      ]) {
+        refused(
+          `select dblink_connect('c', '${target} user=postgres password=pw')`,
+          'pg_hba.conf rejects',
+        )
+      }
+      tenant(`create server as_postgres_socket foreign data wrapper postgres_fdw options (host '/var/run/postgresql', dbname 'postgres');
+        create user mapping for postgres server as_postgres_socket options (user 'postgres', password 'pw');
+        create foreign table as_postgres_socket_roles (rolname name) server as_postgres_socket options (schema_name 'pg_catalog', table_name 'pg_roles');
+        create server as_postgres_tcp foreign data wrapper postgres_fdw options (host '127.0.0.1', dbname 'postgres');
+        create user mapping for postgres server as_postgres_tcp options (user 'postgres', password 'pw');
+        create foreign table as_postgres_tcp_roles (rolname name) server as_postgres_tcp options (schema_name 'pg_catalog', table_name 'pg_roles');`)
+      refused('select * from as_postgres_socket_roles', 'pg_hba.conf rejects')
+      refused('select * from as_postgres_tcp_roles', 'pg_hba.conf rejects')
+    })
+
+    test('role attributes, connection limits, replication, databases and roles', () => {
+      expect(tenant('set role none; select current_user, session_user')).toBe('app|app')
+      for (const attribute of [
+        'replication',
+        'createdb',
+        'createrole',
+        'bypassrls',
+        'superuser',
+        'connection limit -1',
+      ]) {
+        refused(`alter role app ${attribute}`, 'permission denied to alter role')
+      }
+      refused('alter role postgres connection limit -1', 'permission denied to alter role')
+      refused(
+        `alter role postgres password 'pw' valid until 'infinity'`,
+        'permission denied to alter role',
+      )
+      refused(
+        'set role none; alter role app connection limit -1',
+        'permission denied to alter role',
+      )
+      refused('grant postgres to app with inherit true', 'permission denied to grant role')
+      refused('grant postgres to app with admin option', 'permission denied to grant role')
+      for (const prefix of ['', 'set role none; ']) {
+        refused(
+          `${prefix}select pg_create_physical_replication_slot('hold', true)`,
+          'permission denied to use replication slots',
+        )
+      }
+      refused('create database other', 'permission denied to create database')
+      refused('create role evil login', 'permission denied to create role')
+    })
+
+    // supabase_privileged_role does not exist, so supautils lets nobody do what it would allow.
+    test('foreign-data wrappers, event triggers, publications and superuser parameters', () => {
+      expect(tenant(`select to_regproc('duckdb_fdw_handler') is not null`)).toBe('t')
+      refused(
+        'create foreign data wrapper duckdb_test handler duckdb_fdw_handler validator duckdb_fdw_validator',
+        'permission denied to create foreign-data wrapper',
+      )
+      refused(
+        'create foreign data wrapper evil',
+        'permission denied to create foreign-data wrapper',
+      )
+      tenant('create function noop_evt() returns event_trigger language plpgsql as $$begin end$$')
+      refused(
+        'create event trigger noop on ddl_command_end execute function noop_evt()',
+        'permission denied to create event trigger',
+      )
+      refused('create publication everything for all tables', 'must be superuser')
+      refused(
+        `alter system set archive_command = 'touch /tmp/x'`,
+        'permission denied to set parameter',
+      )
+      refused(
+        `alter database postgres set session_replication_role = 'replica'`,
+        'permission denied to set parameter',
+      )
+    })
+
+    // As postgres, ALTER ROLE app fails on the role; as app itself, on the parameter.
+    for (const [as, prefix, alterRoleReason] of [
+      ['postgres', '', 'permission denied to alter role'],
+      ['the login role', 'set role none; ', 'permission denied to set parameter'],
+    ]) {
+      test(`server files, programs and superuser parameters as ${as}`, () => {
+        refused(`${prefix}select pg_read_file('postgresql.conf')`, 'permission denied for function')
+        refused(`${prefix}copy (select 1) to program 'id'`, 'permission denied to COPY')
+        refused(`${prefix}select lo_import('/etc/passwd')`, 'permission denied for function')
+        refused(`${prefix}select lo_export(0, '/tmp/x')`, 'permission denied for function')
+        refused(`${prefix}alter role app set session_replication_role = 'replica'`, alterRoleReason)
+      })
+    }
   })
 
   test('the root key comes from the mounted file, so a recreated container decrypts', async () => {

@@ -48,14 +48,25 @@ The server reads `/etc/postgresql/postgresql.conf`, outside `PGDATA`, run as
 - **Initialisation.** The image has no init scripts of its own. Start it with docker-library's
   variables, `POSTGRES_USER=supabase_admin` (supautils' superuser) and `POSTGRES_DB=postgres`, and
   your own SQL in `/docker-entrypoint-initdb.d`. That SQL creates the tenant `postgres`
-  (`NOSUPERUSER NOINHERIT`), `anon`, `authenticated` and `service_role`, and an `extensions`
-  schema. `test/fixtures/init/00-tenant.sql` is the smallest such init.
+  (`NOSUPERUSER NOINHERIT`), `anon`, `authenticated` and `service_role`, an `extensions`
+  schema, and the login roles the tenant logs in as: `NOINHERIT`, with a connection limit, a
+  `SET` grant of `postgres` and `ALTER ROLE … SET role = 'postgres'`. `test/fixtures/init` is the
+  smallest such init.
 - **The root key.** pgsodium and Vault read it with `getkey.sh` from
   `/run/secrets/pgsodium_root_key`, which you mount: 64 lowercase hex characters. The image never
   generates one: a key inside the container would be lost when the container is recreated, and
   every secret with it. Without the file the server does not start.
-- **Logins.** `pg_hba.conf` asks every connection for its password, the socket and loopback too.
-  pg_cron runs its jobs in background workers, so it needs no trusted loopback login.
+- **Logins.** `pg_hba.conf` refuses every login as `postgres`, the socket and loopback too. Acting
+  as `postgres`, the tenant can give it a password, and `postgres` has no connection limit, so a
+  login as it, directly or through dblink or postgres_fdw, would get round its login role's limit.
+  pg_cron and pg_net run as `postgres` in background workers, which never read `pg_hba.conf`. Every
+  other connection logs in with its password.
+- **No privileged role.** `supautils/supautils.conf` names `supabase_privileged_role`, which the
+  init never creates or grants, so supautils treats nobody as privileged. The tenant creates no
+  foreign-data wrapper of wrappers, no event trigger and no publication of every table, sets none
+  of `privileged_role_allowed_configs`, cannot `ALTER ROLE … SET` them for its login roles, and
+  cannot `COMMENT ON EXTENSION` on an extension it does not own, which is every privileged one,
+  created as `supabase_admin`. Restoring a backup with such comments can fail.
 - **One app per instance.** pg_cron and pg_net serve only the `postgres` database.
 - **Settings.** The extensions' preload libraries. plpgsql_check's profiler gets
   1 MB of shared memory rather than the 20 MB it takes by default. Add your own settings in
@@ -68,12 +79,13 @@ and pull request. On `main` it pushes `ghcr.io/prototeamhq/postgres:<postgres mi
 and the run's summary shows the digest. The build takes about 4 minutes at 4 CPUs, and the image is
 about 1 GB.
 
-The test initialises the image as above and checks that, as the tenant:
+The test initialises the image as above and checks that, logged in as the login role `app`:
 - every extension is created inside a transaction that rolls back, and inside the same transaction committed;
 - pg_cron runs a job;
 - pg_net gets a response;
 - pgmq, Vault, PostGIS and pgRouting 3's `pgr_createTopology` work;
-- every escalation path is refused;
+- every escalation path is refused, as `postgres` and as the login role, including a login as
+  `postgres` with a password the tenant gave it;
 - a container recreated over the same data, with the same key, still decrypts.
 
 To run it locally, on Linux with Docker and [Bun](https://bun.sh):

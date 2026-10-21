@@ -1,7 +1,8 @@
 -- The smallest init (README.md#how-a-container-runs-it), run by the bootstrap superuser
 -- supabase_admin. The tenant is named postgres because the after-create scripts and pg_net.username
--- grant to that name.
-create role postgres login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls password 'tenant';
+-- grant to that name. It has no password: nobody logs in as it (pg_hba.conf), the tenant logs in as
+-- a login role that acts as it (10-app.sql).
+create role postgres login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
 create role anon nologin noinherit;
 create role authenticated nologin noinherit;
 create role service_role nologin noinherit bypassrls;
@@ -10,4 +11,4 @@ alter database postgres owner to postgres;
 create schema extensions authorization postgres;
 grant usage on schema extensions to anon, authenticated, service_role;
 grant usage on schema public to anon, authenticated, service_role;
-alter role postgres set search_path = "$user", public, extensions;
+alter database postgres set search_path = "$user", public, extensions;
