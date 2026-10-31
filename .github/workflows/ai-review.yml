@@ -9,6 +9,8 @@ on:
     # The review adds ai-approved with GITHUB_TOKEN, and a label added with GITHUB_TOKEN starts no workflow.
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   # The repository's CI workflows, by name: each run that finishes tries the merge again. Never list ai-review itself.
+  # The shared workflow finds the pull request by the run's branch, ignores runs on a fork's branch or with no open
+  # pull request, and keeps one merge attempt per branch at a time.
   workflow_run:
     workflows: [image]
     types: [completed]
