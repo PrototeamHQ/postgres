@@ -1,7 +1,8 @@
 name: image
 
-# Builds and tests the image on every push and pull request, and publishes it from main as
-# ghcr.io/prototeamhq/postgres:<postgres minor>-<build number> (README.md#building-and-publishing).
+# Builds and tests the image for linux/amd64 and linux/arm64, each on a native runner, on every push and
+# pull request, and publishes it from main as ghcr.io/prototeamhq/postgres:<postgres minor>-<build number>,
+# one tag over both architectures (README.md#building-and-publishing).
 on:
   push:
     branches: [main]
@@ -19,12 +20,19 @@ permissions:
 jobs:
   image:
     if: ${{ github.event_name != 'repository_dispatch' || github.event.client_payload.base == 'main' }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     concurrency:
-      group: image-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      group: image-${{ matrix.arch }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     env:
-      LOCAL_IMAGE: postgres-image:${{ github.run_id }}-${{ github.run_attempt }}
+      LOCAL_IMAGE: postgres-image:${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v5
 
@@ -40,15 +48,15 @@ jobs:
           TEST_POSTGRES_IMAGE: ${{ env.LOCAL_IMAGE }}
         run: bun test
 
-      # The publish job pushes this exact tested image, so only it holds packages: write.
+      # The publish job pushes these exact tested images, so only it holds packages: write.
       - name: Save
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: docker save "$LOCAL_IMAGE" | zstd -T0 > image.tar.zst
+        run: docker save "$LOCAL_IMAGE" | zstd -T0 > image-${{ matrix.arch }}.tar.zst
 
       - uses: actions/upload-artifact@v7
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
-          path: image.tar.zst
+          path: image-${{ matrix.arch }}.tar.zst
           archive: false
           retention-days: 1
 
@@ -62,23 +70,36 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: image.tar.zst
+          name: image-amd64.tar.zst
 
-      # Takes the tag the image was saved under, which a re-run of this job alone does not change.
+      - uses: actions/download-artifact@v8
+        with:
+          name: image-arm64.tar.zst
+
+      # Takes the tags the images were saved under, which a re-run of this job alone does not change.
       - name: Load
         run: |
-          image=$(zstd -dc image.tar.zst | docker load | sed -n 's/^Loaded image: //p')
-          echo "LOCAL_IMAGE=$image" >> "$GITHUB_ENV"
+          for arch in amd64 arm64; do
+            image=$(zstd -dc "image-$arch.tar.zst" | docker load | sed -n 's/^Loaded image: //p')
+            echo "LOCAL_IMAGE_${arch^^}=$image" >> "$GITHUB_ENV"
+          done
 
       # Build numbers continue the image's earlier builds, which published up to 18.6-2, so a tag
-      # never moves to another image.
+      # never moves to another image. Each architecture's image is pushed under the new tag in turn,
+      # only to put it in the repository by digest, and the tag then ends on the manifest list of both.
       - name: Publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          minor=$(docker run --rm "$LOCAL_IMAGE" postgres --version | sed -E 's/^postgres \(PostgreSQL\) ([0-9]+\.[0-9]+).*/\1/')
-          tag="ghcr.io/prototeamhq/postgres:$minor-$(( ${{ github.run_number }} + 2 ))"
+          minor=$(docker run --rm "$LOCAL_IMAGE_AMD64" postgres --version | sed -E 's/^postgres \(PostgreSQL\) ([0-9]+\.[0-9]+).*/\1/')
+          repo=ghcr.io/prototeamhq/postgres
+          tag="$repo:$minor-$(( ${{ github.run_number }} + 2 ))"
           echo "$GITHUB_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "$LOCAL_IMAGE" "$tag"
-          docker push "$tag"
-          echo "Published \`$tag@$(docker inspect --format '{{index .RepoDigests 0}}' "$tag" | cut -d@ -f2)\`" >> "$GITHUB_STEP_SUMMARY"
+          sources=()
+          for image in "$LOCAL_IMAGE_AMD64" "$LOCAL_IMAGE_ARM64"; do
+            docker tag "$image" "$tag"
+            digest=$(docker push "$tag" | sed -En 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p')
+            sources+=("$repo@$digest")
+          done
+          docker buildx imagetools create -t "$tag" "${sources[@]}"
+          echo "Published \`$tag@$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)\`" >> "$GITHUB_STEP_SUMMARY"

@@ -79,8 +79,9 @@ The server reads `/etc/postgresql/postgresql.conf`, outside `PGDATA`, run as
 ## Building and publishing
 
 `.github/workflows/image.yml` builds the image and runs `test/image.test.ts` on it for every push
-and pull request. On `main` it pushes `ghcr.io/prototeamhq/postgres:<postgres minor>-<build number>`,
-and the run's summary shows the digest. The build takes about 4 minutes at 4 CPUs, and the image is
+and pull request, for linux/amd64 and linux/arm64, each on a native runner. On `main` it pushes
+`ghcr.io/prototeamhq/postgres:<postgres minor>-<build number>`, one tag over both architectures, and
+the run's summary shows the digest. The build takes about 4 minutes at 4 CPUs, and the image is
 about 1 GB.
 
 The test initialises the image as above and checks that, logged in as the login role `app`:
@@ -107,7 +108,7 @@ TEST_POSTGRES_IMAGE=postgres-image:dev bun test
   unasked. When PGDG drops an old version from its pool, the build fails until the pin moves.
 - **A source-built extension.** Change its commit, and the tag in its comment. Drop a patch in
   `patches/<name>/` the new commit already has; one that no longer applies fails the build.
-- **An upstream `.deb`.** Change its URL and sha256 together.
+- **An upstream `.deb`.** Change its version and both architectures' sha256 together.
 - **The supautils config.** Diff `supautils.conf.j2` and `postgresql_extension_custom_scripts/`
   in `supabase/postgres` against `supautils/`, and keep the tiger fix.
 
