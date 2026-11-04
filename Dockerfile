@@ -34,7 +34,8 @@ RUN set -eu; git init -q /src; cd /src; \
     cmake .. -DPOSTGRESQL_PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config; \
     make -j"$(nproc)"; make install DESTDIR=/out
 
-# The upstream pg18 builds of the pgrx extensions, and Groonga's apt source, checked against pinned sums.
+# The upstream pg18 builds of the pgrx extensions for the target architecture, and Groonga's apt source,
+# checked against pinned sums.
 # The .debs keep their control and SQL files in /var/lib/postgresql/extension, which is a VOLUME in
 # the base image, behind symlinks in the extension directory: the real files are copied instead.
 FROM ${BASE} AS downloads
@@ -42,12 +43,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && rm -rf /var/lib/apt/lists/*
 COPY fetch.sh /usr/local/bin/fetch
 WORKDIR /downloads
-RUN fetch https://github.com/supabase/pg_graphql/releases/download/v1.6.2/pg_graphql-v1.6.2-pg18-amd64-linux-gnu.deb \
-      271063ea2b8f99e00458473aa3b0e6dc0f88d341b2269401dc0b55a77b23970d
-RUN fetch https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg18-amd64-linux-gnu.deb \
-      5c7fe6c810835e4242fb0365b57581c0009b0155200dd4f1266cee434295732f
-RUN fetch https://github.com/supabase/wrappers/releases/download/v0.6.3/wrappers-v0.6.3-pg18-amd64-linux-gnu.deb \
-      d1c4024110843908a5e5152d209eec132bbd694d8b39ae3a4dd1cade117d4888
+ARG TARGETARCH
+RUN set -eu; case "$TARGETARCH" in \
+      amd64) graphql=271063ea2b8f99e00458473aa3b0e6dc0f88d341b2269401dc0b55a77b23970d \
+             jsonschema=5c7fe6c810835e4242fb0365b57581c0009b0155200dd4f1266cee434295732f \
+             wrappers=d1c4024110843908a5e5152d209eec132bbd694d8b39ae3a4dd1cade117d4888 ;; \
+      arm64) graphql=3c6c3e0b65a267dc2f26e5048dbf5af288ff8b0c5546c23ec2d74407c818c2ed \
+             jsonschema=49355efc355cb8815ae482551b64598b0752f3b8cbc7a9d201bc66a91714e254 \
+             wrappers=0622039639dd1eae52aaa8758181a8c7f67df639109c96ea933ecaf82e5ff722 ;; \
+      *) echo "no pg18 .debs for $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    fetch "https://github.com/supabase/pg_graphql/releases/download/v1.6.2/pg_graphql-v1.6.2-pg18-$TARGETARCH-linux-gnu.deb" "$graphql"; \
+    fetch "https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg18-$TARGETARCH-linux-gnu.deb" "$jsonschema"; \
+    fetch "https://github.com/supabase/wrappers/releases/download/v0.6.3/wrappers-v0.6.3-pg18-$TARGETARCH-linux-gnu.deb" "$wrappers"
 RUN set -eu; for f in *.deb; do dpkg-deb -x "$f" /deb; done; \
     mkdir -p /out/usr/lib/postgresql/18/lib /out/usr/share/postgresql/18/extension; \
     cp -L /deb/usr/lib/postgresql/18/lib/* /out/usr/lib/postgresql/18/lib/; \
