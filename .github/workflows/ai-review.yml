@@ -17,7 +17,7 @@ on:
 
 # Merging a pull request takes contents: write: https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps#repository-permissions-for-contents
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: write
   pull-requests: write
@@ -28,5 +28,6 @@ jobs:
     uses: protobase-community/.github/.github/workflows/ai-pr-review.yml@main # zizmor: ignore[unpinned-uses] main is the reviewed version
     with:
       auto-merge: true
+      dispatch-after-merge: image.yml
     secrets:
       SCW_PR_REVIEW_SECRET_KEY: ${{ secrets.SCW_PR_REVIEW_SECRET_KEY }}
