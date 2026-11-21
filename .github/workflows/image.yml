@@ -7,8 +7,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # A merge the AI review makes with the workflow's own token pushes without starting a workflow, so the review starts
-  # this one on the branch it merged into (dispatch-after-merge in ai-review.yml).
   workflow_dispatch:
 
 permissions:
