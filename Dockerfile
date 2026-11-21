@@ -3,8 +3,16 @@
 # builds of the rest. Every source is pinned.
 ARG BASE=docker.io/library/postgres:18.6-trixie@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
 
+# The base image with PGDG's archive as an apt source, for the build stages' pinned server headers: PGDG's main
+# repository keeps only the latest few builds of a package, its archive every one. The archive is served over HTTPS,
+# which takes ca-certificates first.
+FROM ${BASE} AS pgdg
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY pgdg-archive.list /etc/apt/sources.list.d/
+
 # Extensions PGDG does not package for 18, built with PGXS against the base image's own server headers.
-FROM ${BASE} AS pgxs
+FROM pgdg AS pgxs
 RUN apt-get update && apt-get install -y --no-install-recommends \
       "postgresql-server-dev-18=${PG_VERSION}" build-essential git ca-certificates \
       libcurl4-openssl-dev libsodium-dev libicu-dev flex bison \
@@ -24,7 +32,7 @@ RUN build-pgxs pgjwt michelp/pgjwt f3d82fd30151e754e19ce5d6a06c71c20689ce3d # no
 RUN build-pgxs plan_filter pgexperts/pg_plan_filter 5081a7b5cb890876e67d8e7486b6a64c38c9a492 # no release tag
 
 # pgRouting 3.8, the last 3.x: PGDG's 4.0 removed functions 3.x has, such as pgr_createTopology.
-FROM ${BASE} AS pgrouting
+FROM pgdg AS pgrouting
 RUN apt-get update && apt-get install -y --no-install-recommends \
       "postgresql-server-dev-18=${PG_VERSION}" build-essential cmake libboost-graph-dev git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -67,10 +75,14 @@ FROM ${BASE}
 LABEL org.opencontainers.image.source=https://github.com/PrototeamHQ/postgres \
       org.opencontainers.image.licenses=Apache-2.0
 COPY --from=downloads /downloads/groonga-apt-source_2026.04.28-1_all.deb /tmp/
+# PGDG's main repository keeps only the latest few builds of a package; its archive keeps every one, so
+# the pins below stay installable. It is served over HTTPS, so it is added once ca-certificates is in.
+COPY pgdg-archive.list /tmp/
 # Extension packages are pinned, so a rebuild never takes a new release unasked. The libraries the
 # source builds link (libsodium, libcurl) follow Debian's security updates.
 RUN set -eu; apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates /tmp/groonga-apt-source_2026.04.28-1_all.deb; \
+    mv /tmp/pgdg-archive.list /etc/apt/sources.list.d/; \
     apt-get update; \
     apt-get install -y --no-install-recommends libsodium23 libcurl4t64 \
       postgresql-18-pgdg-pgroonga=4.1.0-1 libgroonga0=16.1.4-1 \
