@@ -1,0 +1,31 @@
+# Merges a pull request with the auto-merge-approvals label once it is approved after the label was added, by CodeRabbit
+# or by anyone with write access, and every check on its head passed. The shared workflow holds the rules:
+# https://github.com/protobase-community/.github/blob/main/.github/workflows/auto-merge-approvals.yml
+# A merge with GITHUB_TOKEN starts no workflow, so it then starts image.yml on the default branch.
+name: auto-merge-approvals
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] nothing from the pull request runs
+    types: [ready_for_review, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  # This repository's CI workflows, by name. Never list auto-merge-approvals itself.
+  workflow_run:
+    workflows: [image]
+    types: [completed]
+  check_suite:
+    types: [completed]
+  status:
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: read
+
+jobs:
+  merge:
+    uses: protobase-community/.github/.github/workflows/auto-merge-approvals.yml@main # zizmor: ignore[unpinned-uses] main is the reviewed version
+    with:
+      dispatch-after-merge: image.yml
