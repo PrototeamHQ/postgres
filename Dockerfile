@@ -67,10 +67,14 @@ FROM ${BASE}
 LABEL org.opencontainers.image.source=https://github.com/PrototeamHQ/postgres \
       org.opencontainers.image.licenses=Apache-2.0
 COPY --from=downloads /downloads/groonga-apt-source_2026.04.28-1_all.deb /tmp/
+# PGDG's main repository keeps only the latest few builds of a package; its archive keeps every one, so
+# the pins below stay installable. It is served over HTTPS, so it is added once ca-certificates is in.
+COPY pgdg-archive.list /tmp/
 # Extension packages are pinned, so a rebuild never takes a new release unasked. The libraries the
 # source builds link (libsodium, libcurl) follow Debian's security updates.
 RUN set -eu; apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates /tmp/groonga-apt-source_2026.04.28-1_all.deb; \
+    mv /tmp/pgdg-archive.list /etc/apt/sources.list.d/; \
     apt-get update; \
     apt-get install -y --no-install-recommends libsodium23 libcurl4t64 \
       postgresql-18-pgdg-pgroonga=4.1.0-1 libgroonga0=16.1.4-1 \
